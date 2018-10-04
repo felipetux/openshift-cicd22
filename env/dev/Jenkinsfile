@@ -45,6 +45,7 @@ pipeline {
                     openshift.withCluster() {
                         openshift.withProject(env.PROJECT) {
                             // Uses the template to create the application
+                            sh "ls /tmp/workspace/dev-app04/dev-app04-hello-microservice-pipeline/"
                             echo "XXXXXXXXX ${env.APP_TEMPLATE_FILE}"
                             openshift.apply(commons.processTemplate(env.APP_TEMPLATE_FILE, env.APP_NAME, env.IMAGE_NAME));
                         }
