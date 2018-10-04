@@ -1,98 +1,141 @@
-apiVersion: v1
-kind: Template
-metadata:
-  name: java-application-template
-  annotations:
-    openshift.io/display-name: Java Application
-    iconClass: fa fa-code
-    description: Template to create a Java application (and its pipeline) based on an specific branch.
-objects:
-- apiVersion: v1
-  kind: BuildConfig
-  metadata:
-    annotations:
-      pipeline.alpha.openshift.io/uses: '[{"name": "${PARAM_APP_NAME}", "namespace": "", "kind": "DeploymentConfig"}]'
-    labels:
-      app: ${PARAM_APP_NAME}
-    name: ${PARAM_APP_NAME}-pipeline
-  spec:
-    source:
-      type: Git
-      sourceSecret:
-        name: git-secret
-      git:
-        uri: https://github.com/felipetux/openshift-cicd.git
-        ref: master
-      contextDir: env/dev
-    strategy:
-      jenkinsPipelineStrategy:
-        env:
-        - name: APP_NAME
-          value: ${PARAM_APP_NAME}
-        - name: IMAGE_NAME
-          value: ${PARAM_IMAGE_NAME}
-        - name: APP_TEMPLATE_FILE
-          value: ${PARAM_APP_TEMPLATE_FILE}
-        - name: GIT_REPO
-          value: ${PARAM_GIT_REPO}
-        - name: GIT_BRANCH
-          value: ${PARAM_GIT_BRANCH}
-        - name: TAG_VERSION
-          value: ${PARAM_TAG_VERSION}
-        - name: GIT_SECRET
-          value: git-secret  
-        - name: BASE_IMAGE
-          value: redhat-openjdk18-openshift:1.2
-        - name: ARTIFACTS_DIR
-          value: ./target
-        - name: JENKINS_AGENT
-          value: maven
-        - name: COMPILE_COMMAND
-          value: "mvn package -DskipTests"
-        - name: TEST_COMMAND
-          value: "mvn test"
-        - name: CODE_ANALYSIS_COMMAND
-          value: none
-        - name: RELEASE_COMMAND
-          value: none
-        - name: TECH
-          value: java
-        jenkinsfilePath: Jenkinsfile
-      type: JenkinsPipeline
-    triggers:
-      - generic:
-          allowEnv: true
-          secret: ${PARAM_WEBHOOK_SECRET}
-        type: Generic
-parameters:
-- description: The application name
-  displayName: Application Name
-  name: PARAM_APP_NAME
-  required: true
-- description: The image name
-  displayName: Image Name
-  name: PARAM_IMAGE_NAME
-  required: true
-- description: The application template file to create the application
-  displayName: Application Template File
-  name: PARAM_APP_TEMPLATE_FILE
-  value: none
-  required: true
-- description: The Git repository
-  displayName: Git Repository
-  name: PARAM_GIT_REPO
-  required: true
-- description: The Git branch
-  displayName: Git Branch
-  name: PARAM_GIT_BRANCH
-  required: true
-- description: Tag image with application version
-  displayName: Tag Image
-  name: PARAM_TAG_VERSION
-  value: "false"
-  required: true
-- description: A secret string used to configure the webhook
-  displayName: Webhook Secret
-  name: PARAM_WEBHOOK_SECRET
-  generate: expression 
-  from: "[a-zA-Z0-9]{40}"
+@Library("pipeline-library") 
+import com.redhat.openshift.pipelines.Commons
+
+def commons = new com.redhat.openshift.pipelines.Commons(this)
+
+pipeline {
+    agent {
+        label env.JENKINS_AGENT
+    }
+    options {
+        skipDefaultCheckout()
+        disableConcurrentBuilds()
+    }
+    stages {
+        stage("Initialize") {
+            steps {
+                script {
+                    env.TAG = "latest"
+                    // Gets the application project
+                    env.PROJECT = commons.getApplicationProject()                         
+                }
+            }
+        }
+        stage("Checkout Code") {
+            steps {
+                script {
+                    openshift.withCluster() {
+                        openshift.withProject(env.PROJECT) {
+                            commons.gitCheckout(env.GIT_REPO, env.GIT_BRANCH, env.GIT_SECRET)
+                        }
+                    }
+                }
+            }
+        }
+        stage ("Apply Template") {
+            when {
+                not {
+                    expression {
+                        return env.APP_TEMPLATE_FILE.equals("none")
+                    }
+                }
+            }
+            steps {
+                script {
+                    openshift.withCluster() {
+                        openshift.withProject(env.PROJECT) {
+                            // Uses the template to create the application
+                            openshift.apply(commons.processTemplate(env.APP_TEMPLATE_FILE, env.APP_NAME, env.IMAGE_NAME));
+                        }
+                    }
+                }
+            }
+        }
+        stage("Compile Code") {
+            when {
+                not {
+                    expression {
+                        return env.COMPILE_COMMAND.equals("none")
+                    }
+                }  
+            }
+            steps {
+                sh env.COMPILE_COMMAND
+            }
+        }
+        stage("Test Code") {
+            when {
+                not {
+                    expression {
+                        return env.TEST_COMMAND.equals("none")
+                    }
+                } 
+            }
+            steps {
+                sh env.TEST_COMMAND
+            }
+        }
+        stage("Analize Code") {
+            when {
+                not {
+                    expression {
+                        return env.CODE_ANALYSIS_COMMAND.equals("none")
+                    }
+                } 
+            }
+            steps {
+                sh env.CODE_ANALYSIS_COMMAND
+            }
+        }
+        stage("Release Artifacts") {
+            when {
+                not {
+                    expression {
+                        return env.RELEASE_COMMAND.equals("none")
+                    }
+                }        
+            }
+            steps {
+                sh env.RELEASE_COMMAND
+            }
+        }
+        stage("Build Image") {
+            steps {
+                script {
+                    openshift.withCluster() {
+                        openshift.withProject(env.PROJECT) {
+                            commons.buildImage(env.APP_NAME, env.IMAGE_NAME, env.ARTIFACTS_DIR, env.BASE_IMAGE)
+                        }
+                    }
+                }
+            }
+        }
+        stage("Tag Image") {
+            when {
+                expression {
+                    return env.TAG_VERSION.equals("true")
+                }   
+            }
+            steps {
+                script {
+                    openshift.withCluster() {
+                        openshift.withProject(env.PROJECT) {
+                            openshift.tag("${env.IMAGE_NAME}:latest", "${env.IMAGE_NAME}:${commons.getTag(env.TECH)}");
+                        }
+                    }
+                } 
+            }
+        }
+        stage("Deploy Application") {
+            steps {
+                script {
+                    openshift.withCluster() {
+                        openshift.withProject(env.PROJECT) {
+                            commons.deployApplication(env.APP_NAME, env.IMAGE_NAME, env.TAG)
+                        } 
+                    }
+                }
+            }
+        }
+    }
+}
