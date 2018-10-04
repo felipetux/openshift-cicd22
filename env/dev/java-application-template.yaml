@@ -21,9 +21,9 @@ objects:
       sourceSecret:
         name: git-secret
       git:
-        uri: https://github.com/redhatcsargentina/openshift-pipelines.git
+        uri: https://github.com/felipetux/openshift-cicd.git
         ref: master
-      contextDir: environments/dev
+      contextDir: env/dev
     strategy:
       jenkinsPipelineStrategy:
         env:
