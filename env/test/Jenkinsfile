@@ -1,134 +1,108 @@
+@Library("pipeline-library") 
+import com.redhat.openshift.pipelines.Commons
+
+def commons = new Commons(this)
+
 pipeline {
-    agent {
-        label "maven"
-    }
-    options { 
-        skipDefaultCheckout() 
+    agent any
+    options {
+        skipDefaultCheckout()
+        disableConcurrentBuilds()
     }
     stages {
-        stage("Checkout") {
+        stage("Initialize") {
             steps {
-                git branch: env.BRANCH, url: env.REPO
+                script {
+                    if (!env.IMAGE_NAME)
+                        env.IMAGE_NAME = env.APP_NAME
+
+                    // Gets the application project
+                    env.PROJECT = commons.getApplicationProject()      
+                }
             }
         }
-        stage("Compile") {
-            steps {
-                sh "mvn package -DskipTests"
+        stage("Select Tag") {
+            when {
+                not {
+                    expression {
+                        return env.TAG
+                    }
+                }
             }
-        }
-        stage("Test") {
-            steps {
-                sh "mvn test"
-            }
-        }
-        stage("Build Image") {
             steps {
                 script {
                     openshift.withCluster() {
-                        openshift.withProject("dev-app02") {
-                            if (!openshift.selector("bc", "${APP}").exists()) {
-                                openshift.newBuild("--image-stream=redhat-openjdk18-openshift:1.2", "--name=${APP}", "--binary=true");                   
-                            }
-                            // Starts a new build and waits for its completion
-                            openshift.selector("bc", "${APP}").startBuild("--from-file=target/hello.war", "--wait=true");
+                        openshift.withProject(env.SRC_PROJECT) {
+                            // Generates a list of tags to deploy
+                            env.TAG = commons.getVersion(env.APP_NAME)
+                            // Checkout same tag from Git
+                            env.GIT_BRANCH = env.TAG
                         }
                     }
                 }
             }
         }
-        stage("Deploy DEV") {
+        stage("Checkout Code") {
             steps {
                 script {
                     openshift.withCluster() {
-                        openshift.withProject("dev-app02") {
-                            if (!openshift.selector("dc", "${APP}").exists()) {
-                                createApp("${APP}", "latest");                   
-                            } else {
-                                // Rollouts to latest version
-                                openshift.selector("dc", "${APP}").rollout().latest();   
-                            }          
+                        openshift.withProject(env.PROJECT) {
+                            commons.gitCheckout(env.GIT_REPO, env.GIT_BRANCH, env.GIT_SECRET)
                         }
                     }
                 }
             }
         }
-        stage("Deploy TEST") {
+        stage("Promote Template") {
+            when {
+                not {
+                    expression {
+                        return env.APP_TEMPLATE_FILE.equals("none")
+                    }
+                }
+            }
             steps {
                 script {
-                    // Asks for approval
-                    input "Deploy TEST?"
-
                     openshift.withCluster {
-                        openshift.withProject("${APP}-test") {
-                            // Gets application version
-                            pom = readMavenPom file: 'pom.xml'
-
-                            // Promotes images between environments
-                            openshift.tag("${APP}-dev/${APP}:latest", "${APP}-test/${APP}:${pom.version}");
-
-                            if (!openshift.selector("dc", "${APP}").exists()) {
-                                createApp("${APP}", pom.version);                   
-                            } else {
-                                // Rollouts to latest version
-                                deployApp(env.APP, pom.version);
-                            }                            
+                        openshift.withProject(env.PROJECT) {
+                            // Uses the template to create the application
+                            openshift.apply(commons.processTemplateWithoutBuildObjects(env.APP_TEMPLATE_FILE, env.APP_NAME, env.IMAGE_NAME))
                         }
                     }
                 }
             }
         }
-        stage("Integration Test") {
+        stage("Promote Tag") {
             steps {
                 script {
-                    // Integration Tests
-                    sleep(5);
+                    openshift.withCluster() {
+                        openshift.withProject(env.PROJECT) {
+                            // Tags image from development to test, this operation creates the ImageStream
+                            openshift.tag("${env.SRC_PROJECT}/${env.IMAGE_NAME}:${env.TAG}", "${env.IMAGE_NAME}:${env.TAG}")
+                        }
+                    } 
                 }
             }
         }
-        stage("Deploy PROD") {
+        stage("Approve Deploy") {
             steps {
                 script {
-                    // Asks for approval
-                    input "Deploy PROD?"
-
-                    openshift.withCluster {
-                        openshift.withProject("${APP}-prod") {
-                            // Gets application version
-                            pom = readMavenPom file: 'pom.xml'
-
-                            // Promotes images between environments
-                            openshift.tag("${APP}-test/${APP}:${pom.version}", "${APP}-prod/${APP}:${pom.version}");
-
-                            if (!openshift.selector("dc", "${APP}").exists()) {
-                                createApp("${APP}", pom.version);                   
-                            } else {
-                                // Rollouts to latest version
-                                deployApp(env.APP, pom.version);
-                            }                            
-                        }
+                    openshift.withCluster() {
+                        commons.resolveApproval(env.APPROVAL_GROUP)
                     }
                 }
             }
-        }          
+        }
+        stage("Deploy Application") {
+            steps {
+                script {
+                    openshift.withCluster() {
+                        openshift.withProject(env.PROJECT) {
+                            commons.deployApplication(env.APP_NAME, env.IMAGE_NAME, env.TAG)
+                        } 
+                    }
+                }
+            }
+        }
     }
-}
-
-def deployApp(app, version) {
-    openshift.patch("dc/${app}", "'{\"spec\":{\"triggers\":[{\"type\":\"ImageChange\",\"imageChangeParams\":{\"containerNames\":[\"${app}\"],\"from\":{\"kind\":\"ImageStreamTag\",\"name\":\"${app}:${version}\"}}}]}}}'")
-    openshift.selector("dc", "${app}").rollout().latest();  
-}
-
-def createApp(app, tag) {
-    // Creates the application and get the brand new BuildConfig
-    def dc = openshift.newApp("${app}:${tag}").narrow("dc");
-    // Creates the app Route
-    openshift.selector("svc", app).expose();
-
-    // Waits for the deployment to finish
-    while (dc.object().spec.replicas != dc.object().status.availableReplicas) {
-        sleep 10
-    }
-    
-    // Removes the triggers  
-    openshift.set("triggers", "dc/${app}", "--manual");
 }
