@@ -3,7 +3,7 @@ kind: Template
 metadata:
   name: java-application-template
   annotations:
-    openshift.io/display-name: Java Application
+    openshift.io/display-name: Java Application (DEV)
     iconClass: icon-rh-openjdk
     description: Template to create a Java application (and its pipeline) based on an specific branch.
 objects:
