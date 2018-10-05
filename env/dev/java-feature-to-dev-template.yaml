@@ -1,9 +1,9 @@
 apiVersion: v1
 kind: Template
 metadata:
-  name: java-application-template
+  name: feature-to-dev-template
   annotations:
-    openshift.io/display-name: Java Application (DEV)
+    openshift.io/display-name: Feature to Dev 
     iconClass: icon-rh-openjdk
     description: Template to create a Java application (and its pipeline) based on an specific branch.
 objects:
@@ -86,6 +86,7 @@ parameters:
   displayName: Git Branch
   name: PARAM_GIT_BRANCH
   required: true
+  value: "feature-"
 - description: Tag image with application version
   displayName: Tag Image
   name: PARAM_TAG_VERSION
