@@ -4,7 +4,7 @@ metadata:
   name: java-application-template
   annotations:
     openshift.io/display-name: Java Application
-    iconClass: fa fa-code
+    iconClass: icon-rh-openjdk
     description: Template to create a Java application (and its pipeline) based on an specific branch.
 objects:
 - apiVersion: v1
