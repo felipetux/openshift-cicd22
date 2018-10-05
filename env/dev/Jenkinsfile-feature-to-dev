@@ -1,0 +1,141 @@
+@Library("pipeline-library") 
+import com.redhat.openshift.pipelines.Commons
+
+def commons = new com.redhat.openshift.pipelines.Commons(this)
+
+pipeline {
+    agent {
+        label env.JENKINS_AGENT
+    }
+    options {
+        skipDefaultCheckout()
+        disableConcurrentBuilds()
+    }
+    stages {
+        stage("Initialize") {
+            steps {
+                script {
+                    env.TAG = "latest"
+                    // Gets the application project
+                    env.PROJECT = commons.getApplicationProject()                         
+                }
+            }
+        }
+        stage("Checkout Code") {
+            steps {
+                script {
+                    openshift.withCluster() {
+                        openshift.withProject(env.PROJECT) {
+                            commons.gitCheckout(env.GIT_REPO, env.GIT_BRANCH, env.GIT_SECRET)
+                        }
+                    }
+                }
+            }
+        }
+        stage ("Apply Template") {
+            when {
+                not {
+                    expression {
+                        return env.APP_TEMPLATE_FILE.equals("none")
+                    }
+                }
+            }
+            steps {
+                script {
+                    openshift.withCluster() {
+                        openshift.withProject(env.PROJECT) {
+                            // Uses the template to create the application
+                            openshift.apply(commons.processTemplate(env.APP_TEMPLATE_FILE, env.APP_NAME, env.IMAGE_NAME));
+                        }
+                    }
+                }
+            }
+        }
+        stage("Compile Code") {
+            when {
+                not {
+                    expression {
+                        return env.COMPILE_COMMAND.equals("none")
+                    }
+                }  
+            }
+            steps {
+                sh env.COMPILE_COMMAND
+            }
+        }
+        stage("Test Code") {
+            when {
+                not {
+                    expression {
+                        return env.TEST_COMMAND.equals("none")
+                    }
+                } 
+            }
+            steps {
+                sh env.TEST_COMMAND
+            }
+        }
+        stage("Analize Code") {
+            when {
+                not {
+                    expression {
+                        return env.CODE_ANALYSIS_COMMAND.equals("none")
+                    }
+                } 
+            }
+            steps {
+                sh env.CODE_ANALYSIS_COMMAND
+            }
+        }
+        stage("Release Artifacts") {
+            when {
+                not {
+                    expression {
+                        return env.RELEASE_COMMAND.equals("none")
+                    }
+                }        
+            }
+            steps {
+                sh env.RELEASE_COMMAND
+            }
+        }
+        stage("Build Image") {
+            steps {
+                script {
+                    openshift.withCluster() {
+                        openshift.withProject(env.PROJECT) {
+                            commons.buildImage(env.APP_NAME, env.IMAGE_NAME, env.ARTIFACTS_DIR, env.BASE_IMAGE)
+                        }
+                    }
+                }
+            }
+        }
+        stage("Tag Image") {
+            when {
+                expression {
+                    return env.TAG_VERSION.equals("true")
+                }   
+            }
+            steps {
+                script {
+                    openshift.withCluster() {
+                        openshift.withProject(env.PROJECT) {
+                            openshift.tag("${env.IMAGE_NAME}:latest", "${env.IMAGE_NAME}:${commons.getTag(env.TECH)}");
+                        }
+                    }
+                } 
+            }
+        }
+        stage("Deploy Application") {
+            steps {
+                script {
+                    openshift.withCluster() {
+                        openshift.withProject(env.PROJECT) {
+                            commons.deployApplication(env.APP_NAME, env.IMAGE_NAME, env.TAG)
+                        } 
+                    }
+                }
+            }
+        }
+    }
+}
